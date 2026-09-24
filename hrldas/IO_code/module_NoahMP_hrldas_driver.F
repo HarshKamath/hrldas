@@ -813,6 +813,8 @@ contains
      implicit  none
      integer :: itime          ! timestep loop
      integer :: I, J, K
+     real(kind=kind_noahmp) :: veg_fraction, urban_fraction
+     real(kind=kind_noahmp) :: rural_t2m, rural_q2m
 
 !---------------------------------------------------------------------------------
 ! Read the forcing data.
@@ -1142,6 +1144,42 @@ contains
         if (mod(ITIME*NoahmpIO%noah_timestep, NoahmpIO%output_timestep) == 0 &
             .and. .not. NoahmpIO%skip_first_output ) then
 
+           ! Construct spatially continuous near-surface fields for SOLWEIG.
+           ! Noah-MP Q2MV/Q2MB are mixing ratios; convert each component to
+           ! specific humidity before applying the vegetation-fraction average.
+           do J = NoahmpIO%JTS, NoahmpIO%JTE
+              do I = NoahmpIO%ITS, NoahmpIO%ITE
+                 if ( NoahmpIO%XLAND(I,J) < 1.5 .and. &
+                      NoahmpIO%XICE(I,J) < NoahmpIO%XICE_THRESHOLD ) then
+                    veg_fraction = max(0.0_kind_noahmp, min(1.0_kind_noahmp, NoahmpIO%FVEGXY(I,J)))
+
+                    rural_t2m = veg_fraction * NoahmpIO%T2MVXY(I,J) + &
+                                (1.0_kind_noahmp - veg_fraction) * NoahmpIO%T2MBXY(I,J)
+                    rural_q2m = veg_fraction * NoahmpIO%Q2MVXY(I,J) / &
+                                (1.0_kind_noahmp + NoahmpIO%Q2MVXY(I,J)) + &
+                                (1.0_kind_noahmp - veg_fraction) * NoahmpIO%Q2MBXY(I,J) / &
+                                (1.0_kind_noahmp + NoahmpIO%Q2MBXY(I,J))
+
+                    NoahmpIO%T2M(I,J)   = rural_t2m
+                    NoahmpIO%Q2M(I,J)   = rural_q2m
+                    NoahmpIO%WS10M(I,J) = NoahmpIO%FORCWLSM(I,J)
+
+                    if ( NoahmpIO%SF_URBAN_PHYSICS == 1 ) then
+                       if ( NoahmpIO%FRC_URB2D(I,J) > 0.0 ) then
+                          urban_fraction = max(0.0_kind_noahmp, min(1.0_kind_noahmp, NoahmpIO%FRC_URB2D(I,J)))
+                          NoahmpIO%T2M(I,J) = urban_fraction * NoahmpIO%TH2_URB2D(I,J) + &
+                                              (1.0_kind_noahmp - urban_fraction) * rural_t2m
+                          NoahmpIO%Q2M(I,J) = urban_fraction * NoahmpIO%Q2_URB2D(I,J) + &
+                                              (1.0_kind_noahmp - urban_fraction) * rural_q2m
+                          NoahmpIO%WS10M(I,J) = urban_fraction * &
+                                                sqrt(NoahmpIO%U10_URB2D(I,J)**2 + NoahmpIO%V10_URB2D(I,J)**2) + &
+                                                (1.0_kind_noahmp - urban_fraction) * NoahmpIO%FORCWLSM(I,J)
+                       endif
+                    endif
+                 endif
+              enddo
+           enddo
+
            call prepare_output_file (trim(NoahmpIO%outdir), version,                                   &
                                      NoahmpIO%igrid, NoahmpIO%output_timestep, NoahmpIO%llanduse,      &
                                      NoahmpIO%split_output_count, NoahmpIO%hgrid,                      &
@@ -1218,9 +1256,12 @@ contains
               call add_to_output(NoahmpIO%TGBXY      , "TGB"     , "Ground surface Temp bare"             , "K"                     )
               call add_to_output(NoahmpIO%T2MVXY     , "T2MV"    , "2m Air Temp vegetated"                , "K"                     )
               call add_to_output(NoahmpIO%T2MBXY     , "T2MB"    , "2m Air Temp bare"                     , "K"                     )
+              call add_to_output(NoahmpIO%T2M        , "T2M"     , "Grid-average 2m air temperature"       , "K"                     )
             ! Above-soil moisture
               call add_to_output(NoahmpIO%Q2MVXY     , "Q2MV"    , "2m mixing ratio vegetated"            , "kg/kg"                 )
               call add_to_output(NoahmpIO%Q2MBXY     , "Q2MB"    , "2m mixing ratio bare"                 , "kg/kg"                 )
+              call add_to_output(NoahmpIO%Q2M        , "Q2M"     , "Grid-average 2m specific humidity"     , "kg/kg"                 )
+              call add_to_output(NoahmpIO%WS10M      , "WS10M"   , "Grid-average 10m wind speed"           , "m/s"                   )
               call add_to_output(NoahmpIO%EAHXY      , "EAH"     , "Canopy air vapor pressure"            , "Pa"                    )
               call add_to_output(NoahmpIO%FWETXY     , "FWET"    , "Wetted fraction of canopy"            , "fraction"              )
             ! Snow and soil - 3D terms
